@@ -21,93 +21,113 @@ def init_user(user_id):
         "capa": None
     }
 
+def reset_flow(chat_id):
+    try:
+        bot.clear_step_handler_by_chat_id(chat_id)
+    except:
+        pass
+
 # /start
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
+
+    # RESET TOTAL
+    reset_flow(message.chat.id)
     init_user(user_id)
 
     bot.send_message(
         message.chat.id,
-        "🎶 Esse bot é para você mostrar aquela música ques está ouvindo, mas não tem em lugar nenhum!\n"
+        "🎶 Esse bot é para você mostrar aquela música que está ouvindo, mas não tem em lugar nenhum!\n"
         "📝 Só mandar os dados que deixo pronto para você enviar..."
     )
 
-    ask_musica(message)
+    ask_musica(message.chat.id)
 
 # 🎧 Música
-def ask_musica(message):
-    bot.send_message(message.chat.id, "🎧 Música?")
-    bot.register_next_step_handler(message, get_musica)
+def ask_musica(chat_id):
+    reset_flow(chat_id)
+    msg = bot.send_message(chat_id, "🎧 Música?")
+    bot.register_next_step_handler(msg, get_musica)
 
 def get_musica(message):
     user_data[message.from_user.id]["musica"] = message.text
-    ask_album(message)
+    ask_album(message.chat.id)
 
 # 🎹 Álbum
-def ask_album(message):
+def ask_album(chat_id):
+    reset_flow(chat_id)
+
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❎", callback_data="skip_album"))
 
-    bot.send_message(message.chat.id, "🎹 Album?", reply_markup=markup)
-    bot.register_next_step_handler(message, get_album)
+    msg = bot.send_message(chat_id, "🎹 Album?", reply_markup=markup)
+    bot.register_next_step_handler(msg, get_album)
 
 def get_album(message):
     user_data[message.from_user.id]["album"] = message.text
-    ask_artista(message)
+    ask_artista(message.chat.id)
 
 # 🙍 Artista
-def ask_artista(message):
-    bot.send_message(message.chat.id, "🙍 Artista?")
-    bot.register_next_step_handler(message, get_artista)
+def ask_artista(chat_id):
+    reset_flow(chat_id)
+    msg = bot.send_message(chat_id, "🙍 Artista?")
+    bot.register_next_step_handler(msg, get_artista)
 
 def get_artista(message):
     user_data[message.from_user.id]["artista"] = message.text
-    ask_capa(message)
+    ask_capa(message.chat.id)
 
 # 📸 Capa
-def ask_capa(message):
+def ask_capa(chat_id):
+    reset_flow(chat_id)
+
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❎", callback_data="skip_capa"))
 
-    bot.send_message(message.chat.id, "📸 Capa?", reply_markup=markup)
-    bot.register_next_step_handler(message, get_capa)
+    msg = bot.send_message(chat_id, "📸 Envie a capa (imagem)?", reply_markup=markup)
+    bot.register_next_step_handler(msg, get_capa)
 
 def get_capa(message):
     if message.photo:
         file_id = message.photo[-1].file_id
         user_data[message.from_user.id]["capa"] = file_id
-
-    gerar_preview(message)
+        gerar_preview(message)
+    else:
+        # evita erro e repetição bugada
+        ask_capa(message.chat.id)
 
 # CALLBACKS
 @bot.callback_query_handler(func=lambda call: True)
 def callbacks(call):
     user_id = call.from_user.id
+    chat_id = call.message.chat.id
+
+    reset_flow(chat_id)
 
     if call.data == "skip_album":
         user_data[user_id]["album"] = None
-        ask_artista(call.message)
+        ask_artista(chat_id)
 
     elif call.data == "skip_capa":
         user_data[user_id]["capa"] = None
         gerar_preview(call.message)
 
     elif call.data == "confirmar":
-        bot.send_message(call.message.chat.id,
+        bot.send_message(chat_id,
                          "🪗🎷🎼 Muito obrigado! quiser outra música mande /start")
 
     elif call.data == "editar":
-        editar_menu(call.message)
+        editar_menu(chat_id)
 
     elif call.data == "edit_musica":
-        ask_musica(call.message)
+        ask_musica(chat_id)
 
     elif call.data == "edit_album":
-        ask_album(call.message)
+        ask_album(chat_id)
 
     elif call.data == "edit_artista":
-        ask_artista(call.message)
+        ask_artista(chat_id)
 
 # PREVIEW
 def gerar_preview(message):
@@ -138,15 +158,15 @@ def gerar_preview(message):
         bot.send_message(message.chat.id, texto, reply_markup=markup)
 
 # EDITAR
-def editar_menu(message):
+def editar_menu(chat_id):
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton("🎧 Música?", callback_data="edit_musica"),
         types.InlineKeyboardButton("🎹 Album?", callback_data="edit_album"),
-        types.InlineKeyboardButton("🙍 Artisa?", callback_data="edit_artista"),
+        types.InlineKeyboardButton("🙍 Artista?", callback_data="edit_artista"),
     )
 
-    bot.send_message(message.chat.id, "🔊 O que deseja corrigir?", reply_markup=markup)
+    bot.send_message(chat_id, "🔊 O que deseja corrigir?", reply_markup=markup)
 
 # START
 bot.infinity_polling()
