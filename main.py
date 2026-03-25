@@ -32,7 +32,6 @@ def reset_flow(chat_id):
 def start(message):
     user_id = message.from_user.id
 
-    # RESET TOTAL
     reset_flow(message.chat.id)
     init_user(user_id)
 
@@ -78,23 +77,28 @@ def get_artista(message):
     user_data[message.from_user.id]["artista"] = message.text
     ask_capa(message.chat.id)
 
-# 📸 Capa
+# 📸 Capa (AGORA ACEITA FOTO OU VÍDEO)
 def ask_capa(chat_id):
     reset_flow(chat_id)
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❎", callback_data="skip_capa"))
 
-    msg = bot.send_message(chat_id, "📸 Envie a capa (imagem)?", reply_markup=markup)
+    msg = bot.send_message(chat_id, "📸 Envie a capa (imagem ou vídeo)?", reply_markup=markup)
     bot.register_next_step_handler(msg, get_capa)
 
 def get_capa(message):
     if message.photo:
         file_id = message.photo[-1].file_id
-        user_data[message.from_user.id]["capa"] = file_id
+        user_data[message.from_user.id]["capa"] = ("photo", file_id)
         gerar_preview(message)
+
+    elif message.video:
+        file_id = message.video.file_id
+        user_data[message.from_user.id]["capa"] = ("video", file_id)
+        gerar_preview(message)
+
     else:
-        # evita erro e repetição bugada
         ask_capa(message.chat.id)
 
 # CALLBACKS
@@ -153,7 +157,14 @@ def gerar_preview(message):
     )
 
     if data["capa"]:
-        bot.send_photo(message.chat.id, data["capa"], caption=texto, reply_markup=markup)
+        tipo, file_id = data["capa"]
+
+        if tipo == "photo":
+            bot.send_photo(message.chat.id, file_id, caption=texto, reply_markup=markup)
+
+        elif tipo == "video":
+            bot.send_video(message.chat.id, file_id, caption=texto, reply_markup=markup)
+
     else:
         bot.send_message(message.chat.id, texto, reply_markup=markup)
 
