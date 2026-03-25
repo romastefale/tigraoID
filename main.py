@@ -1,7 +1,13 @@
+import os
 import telebot
 from telebot import types
 
-TOKEN = "SEU_TELEGRAM_TOKEN_AQUI"
+# VARIÁVEL DE AMBIENTE
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+
+if not TOKEN:
+    raise ValueError("Defina a variável de ambiente TELEGRAM_TOKEN")
+
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # Armazenamento simples em memória
@@ -74,7 +80,7 @@ def get_capa(message):
 
     gerar_preview(message)
 
-# CALLBACKS (❎)
+# CALLBACKS
 @bot.callback_query_handler(func=lambda call: True)
 def callbacks(call):
     user_id = call.from_user.id
@@ -103,7 +109,7 @@ def callbacks(call):
     elif call.data == "edit_artista":
         ask_artista(call.message)
 
-# PREVIEW FINAL
+# PREVIEW
 def gerar_preview(message):
     user_id = message.from_user.id
     data = user_data[user_id]
@@ -131,7 +137,7 @@ def gerar_preview(message):
     else:
         bot.send_message(message.chat.id, texto, reply_markup=markup)
 
-# MENU DE EDIÇÃO
+# EDITAR
 def editar_menu(message):
     markup = types.InlineKeyboardMarkup()
     markup.add(
