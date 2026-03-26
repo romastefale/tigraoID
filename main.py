@@ -37,8 +37,8 @@ def start(message):
 
     bot.send_message(
         message.chat.id,
-        "🎶 Esse bot é para você mostrar aquela música que está ouvindo, mas não tem em lugar nenhum!\n"
-        "📝 Só mandar os dados que deixo pronto para você enviar..."
+        "🎶 <b>Esse bot feito pelo @tigrao para você mostrar aquela música que está ouvindo, mas não tem em lugar nenhum!</b>\n"
+        "📝 <i>Só mandar os dados que deixo pronto para você enviar...</i>"
     )
 
     ask_musica(message.chat.id)
