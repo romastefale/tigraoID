@@ -93,14 +93,14 @@ def get_artista(message):
     user_data[message.from_user.id]["artista"] = message.text
     ask_capa(message.chat.id)
 
-# 📸 Capa (ACEITA FOTO OU VÍDEO)
+# 📸 Capa (ACEITA FOTO, VÍDEO OU GIF/VÍDEO MUDO)
 def ask_capa(chat_id):
     reset_flow(chat_id)
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("❎", callback_data="skip_capa"))
 
-    msg = bot.send_message(chat_id, "📸 Envie a capa (imagem ou vídeo)?", reply_markup=markup)
+    msg = bot.send_message(chat_id, "📸 Envie a capa (imagem, vídeo ou GIF)?", reply_markup=markup)
     bot.register_next_step_handler(msg, get_capa)
 
 def get_capa(message):
@@ -112,6 +112,12 @@ def get_capa(message):
     elif message.video:
         file_id = message.video.file_id
         user_data[message.from_user.id]["capa"] = ("video", file_id)
+        gerar_preview(message)
+        
+    # 👇 ADICIONADO: Captura de GIFs e vídeos mudos
+    elif message.animation:
+        file_id = message.animation.file_id
+        user_data[message.from_user.id]["capa"] = ("animation", file_id)
         gerar_preview(message)
 
     else:
@@ -180,6 +186,10 @@ def gerar_preview(message):
 
         elif tipo == "video":
             bot.send_video(message.chat.id, file_id, caption=texto, reply_markup=markup)
+            
+        # 👇 ADICIONADO: Envio do GIF/vídeo mudo na preview
+        elif tipo == "animation":
+            bot.send_animation(message.chat.id, file_id, caption=texto, reply_markup=markup)
 
     else:
         bot.send_message(message.chat.id, texto, reply_markup=markup)
