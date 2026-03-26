@@ -27,8 +27,8 @@ def reset_flow(chat_id):
     except:
         pass
 
-# /start
-@bot.message_handler(commands=['start'])
+# 🔥 INTERCEPTA /start EM QUALQUER MOMENTO
+@bot.message_handler(commands=['start'], func=lambda message: True)
 def start(message):
     user_id = message.from_user.id
 
@@ -43,14 +43,30 @@ def start(message):
 
     ask_musica(message.chat.id)
 
-# 🎧 Música
+# 🎧 Música (AGORA ACEITA LINK DO TELEGRAM)
 def ask_musica(chat_id):
     reset_flow(chat_id)
     msg = bot.send_message(chat_id, "🎧 Música?")
     bot.register_next_step_handler(msg, get_musica)
 
 def get_musica(message):
-    user_data[message.from_user.id]["musica"] = message.text
+    text = message.text or ""
+
+    # 🔥 CONVERTE ENTIDADES (links do Telegram) PARA HTML
+    if message.entities:
+        offset_correction = 0
+        for entity in message.entities:
+            if entity.type == "text_link":
+                start = entity.offset + offset_correction
+                end = start + entity.length
+                original = text[start:end]
+
+                link = f'<a href="{entity.url}">{original}</a>'
+                text = text[:start] + link + text[end:]
+
+                offset_correction += len(link) - len(original)
+
+    user_data[message.from_user.id]["musica"] = text
     ask_album(message.chat.id)
 
 # 🎹 Álbum
@@ -77,7 +93,7 @@ def get_artista(message):
     user_data[message.from_user.id]["artista"] = message.text
     ask_capa(message.chat.id)
 
-# 📸 Capa (AGORA ACEITA FOTO OU VÍDEO)
+# 📸 Capa (ACEITA FOTO OU VÍDEO)
 def ask_capa(chat_id):
     reset_flow(chat_id)
 
