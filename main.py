@@ -171,14 +171,14 @@ def get_musica(message):
     user_data[message.from_user.id]["musica"] = text.strip()
     ask_album(message.chat.id)
 
-# 🎹 ÁLBUM
+# 🖼️ ÁLBUM
 def ask_album(chat_id):
     reset_flow(chat_id)
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("⏭️ Pular", callback_data="skip_album"))
 
-    msg = bot.send_message(chat_id, "🎹 Qual é o álbum?", reply_markup=markup)
+    msg = bot.send_message(chat_id, "🖼️ Qual é o álbum?", reply_markup=markup)
     bot.register_next_step_handler(msg, get_album)
 
 def get_album(message):
