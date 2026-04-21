@@ -262,7 +262,7 @@ def gerar_preview(message):
     artista = f"— {data['artista']}" if data.get("artista") else ""
 
     texto = (
-        f"🎹<b>{user}</b> está ouvindo...\n\n"
+        f"🎹<b>{user}</b> está ouvindo...\n"
         f"🎧<b>{musica}</b> "
         f"<i>{album} {artista}</i>"
     )
