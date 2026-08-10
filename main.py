@@ -6,7 +6,7 @@ from pathlib import Path
 import telebot
 from telebot import types
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 
 if not TOKEN:
     raise ValueError("Defina a variável de ambiente TELEGRAM_TOKEN")
@@ -293,4 +293,13 @@ def gerar_preview(message):
 
 # START
 if __name__ == "__main__":
-    bot.infinity_polling()
+    print("Removendo webhook anterior...")
+
+    removido = bot.delete_webhook(drop_pending_updates=True)
+    print(f"Webhook removido: {removido}")
+
+    bot.infinity_polling(
+        skip_pending=True,
+        timeout=30,
+        long_polling_timeout=30,
+    )
