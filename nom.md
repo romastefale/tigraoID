@@ -2,8 +2,7 @@
 
 ### A grafia representada e seu prefixo não confirma se é um tipo de produto determinado, assim como não é omitida essa confirmação que a informação não garante que ela seja a o relato de todos os ângulos, mas o honesto do criador.
 
-'''
-@mrdidiao
+'''@mrdidiao
 @hwkfgf
 @uywuyw
 @manvsbee
