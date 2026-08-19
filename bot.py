@@ -17,7 +17,6 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 MAX_FILE_SIZE_MB = 20
 MAX_DURATION_SEC = 120
 
-# Estados da Conversação
 MENU_ACAO, MENU_PACOTE, NOVO_TITULO, NOVO_NOME, NOVO_EMOJI, ADD_EMOJI, ADD_NOME = range(7)
 
 def criar_mascara_arredondada(tamanho, raio):
@@ -31,9 +30,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Envie um vídeo ou foto para iniciar a extração ou criação de pacote. Envie /cancelar a qualquer momento para abortar.")
     return MENU_ACAO
 
+async def repetir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    partes = update.message.text.split(' ', 1)
+    if len(partes) > 1:
+        mensagem = partes[1]
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=mensagem)
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Formato incorreto. Uso: /repetir <sua mensagem>")
+
 async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     mensagem = update.message
-    
     if mensagem.video: file_obj, ftype = mensagem.video, 'video'
     elif mensagem.document and mensagem.document.mime_type and mensagem.document.mime_type.startswith('video/'):
         file_obj, ftype = mensagem.document, 'video'
@@ -76,17 +82,14 @@ async def processar_acao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await executar_conversao_voz(telegram_file, query, "telegram")
             context.user_data.clear()
             return ConversationHandler.END
-            
         elif acao == "audio_whatsapp":
             await executar_conversao_voz(telegram_file, query, "whatsapp")
             context.user_data.clear()
             return ConversationHandler.END
-            
         elif acao == "sticker_video":
             dados_sticker = await executar_sticker_video(telegram_file, query)
             context.user_data['sticker_bytes'] = dados_sticker
             context.user_data['sticker_format'] = StickerFormat.VIDEO
-            
         elif acao == "sticker_foto":
             dados_sticker = await executar_sticker_foto(telegram_file, query)
             context.user_data['sticker_bytes'] = dados_sticker
@@ -244,6 +247,7 @@ def main() -> None:
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("repetir", repetir))
     application.add_handler(conv_handler)
 
     logger.info("Sistema ativo de processamento de media e pacotes.")
