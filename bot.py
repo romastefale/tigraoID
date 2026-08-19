@@ -48,7 +48,8 @@ async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     if ftype == 'video':
         teclado = [
-            [InlineKeyboardButton("Extrair Voz", callback_data="voz")],
+            [InlineKeyboardButton("Extrair Voz (Nativo Telegram)", callback_data="voz")],
+            [InlineKeyboardButton("Extrair Áudio (Para WhatsApp / M4A)", callback_data="audio_whatsapp")],
             [InlineKeyboardButton("Criar Figurinha Animada", callback_data="sticker_video")]
         ]
     else:
@@ -72,7 +73,12 @@ async def processar_acao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if acao == "voz":
-            await executar_conversao_voz(telegram_file, query)
+            await executar_conversao_voz(telegram_file, query, "telegram")
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        elif acao == "audio_whatsapp":
+            await executar_conversao_voz(telegram_file, query, "whatsapp")
             context.user_data.clear()
             return ConversationHandler.END
             
@@ -90,7 +96,7 @@ async def processar_acao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton("Criar Novo Pacote", callback_data="pacote_novo")],
             [InlineKeyboardButton("Adicionar a Pacote Existente", callback_data="pacote_add")]
         ]
-        await query.edit_message_text("Processamento concluído. Onde deseja guardar esta figurinha?", reply_markup=InlineKeyboardMarkup(teclado))
+        await query.edit_message_text("Processamento de figurinha concluído. Onde deseja guardar?", reply_markup=InlineKeyboardMarkup(teclado))
         return MENU_PACOTE
 
     except Exception as e:
@@ -99,16 +105,27 @@ async def processar_acao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data.clear()
         return ConversationHandler.END
 
-# --- ROTINAS DE PROCESSAMENTO E CONVERSÃO ---
+async def executar_conversao_voz(telegram_file, query, plataforma):
+    if plataforma == "telegram":
+        extensao = ".ogg"
+        parametros_ffmpeg = ["-c:a", "libopus", "-b:a", "32k"]
+    else:
+        extensao = ".m4a"
+        parametros_ffmpeg = ["-c:a", "aac", "-b:a", "128k"]
 
-async def executar_conversao_voz(telegram_file, query):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tv, tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as ta:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tv,          tempfile.NamedTemporaryFile(delete=False, suffix=extensao) as ta:
         v_path, a_path = tv.name, ta.name
+        
     try:
         await telegram_file.download_to_drive(v_path)
-        subprocess.run(["ffmpeg", "-y", "-i", v_path, "-t", str(MAX_DURATION_SEC), "-vn", "-c:a", "libopus", "-b:a", "32k", a_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        comando = ["ffmpeg", "-y", "-i", v_path, "-t", str(MAX_DURATION_SEC), "-vn"] + parametros_ffmpeg + [a_path]
+        subprocess.run(comando, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
         with open(a_path, 'rb') as f:
-            await query.message.reply_voice(voice=f)
+            if plataforma == "telegram":
+                await query.message.reply_voice(voice=f)
+            else:
+                await query.message.reply_audio(audio=f, title="Áudio Extraído", performer="Bot")
     finally:
         for p in [v_path, a_path]:
             if os.path.exists(p): os.remove(p)
@@ -138,8 +155,6 @@ async def executar_sticker_foto(telegram_file, query) -> bytes:
         for p in [i_path, o_path]:
             if os.path.exists(p): os.remove(p)
 
-# --- FLUXO DE PACOTES ---
-
 async def escolha_pacote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -150,7 +165,6 @@ async def escolha_pacote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Envie UM EMOJI para vincular a esta figurinha:")
         return ADD_EMOJI
 
-# -- Criação de Pacote Novo --
 async def novo_titulo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['pack_title'] = update.message.text
     bot_info = await context.bot.get_me()
@@ -181,7 +195,6 @@ async def concluir_novo_pacote(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.clear()
     return ConversationHandler.END
 
-# -- Adição a Pacote Existente --
 async def add_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['pack_emoji'] = update.message.text
     bot_info = await context.bot.get_me()
@@ -238,4 +251,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
