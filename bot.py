@@ -3,13 +3,13 @@ import sys
 import subprocess
 import tempfile
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import io
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputSticker
+from telegram.constants import StickerFormat
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
 from PIL import Image, ImageOps, ImageDraw
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -17,182 +17,196 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 MAX_FILE_SIZE_MB = 20
 MAX_DURATION_SEC = 120
 
+# Estados da Conversação
+MENU_ACAO, MENU_PACOTE, NOVO_TITULO, NOVO_NOME, NOVO_EMOJI, ADD_EMOJI, ADD_NOME = range(7)
+
 def criar_mascara_arredondada(tamanho, raio):
-    """Gera uma máscara com fundo preto e quadrado central branco com bordas arredondadas."""
     mascara = Image.new('L', tamanho, 0)
     draw = ImageDraw.Draw(mascara)
     draw.rounded_rectangle((0, 0, tamanho[0], tamanho[1]), raio, fill=255)
     return mascara
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    instrucoes = (
-        "Sistema de conversão de Mídia.\n\n"
-        "Envie um vídeo ou uma foto. O sistema exibirá botões para escolher a formatação desejada."
-    )
-    await update.message.reply_text(instrucoes)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("Envie um vídeo ou foto para iniciar a extração ou criação de pacote. Envie /cancelar a qualquer momento para abortar.")
+    return MENU_ACAO
 
-async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Interceta vídeos e fotos e apresenta os botões de ação."""
+async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     mensagem = update.message
-    file_id = None
-    file_type = None
-
-    if mensagem.video:
-        file_obj = mensagem.video
-        file_type = 'video'
+    
+    if mensagem.video: file_obj, ftype = mensagem.video, 'video'
     elif mensagem.document and mensagem.document.mime_type and mensagem.document.mime_type.startswith('video/'):
-        file_obj = mensagem.document
-        file_type = 'video'
-    elif mensagem.photo:
-        file_obj = mensagem.photo[-1] # Obtém a maior resolução
-        file_type = 'photo'
-    else:
-        return
+        file_obj, ftype = mensagem.document, 'video'
+    elif mensagem.photo: file_obj, ftype = mensagem.photo[-1], 'photo'
+    else: return MENU_ACAO
 
     if getattr(file_obj, 'file_size', 0) > MAX_FILE_SIZE_MB * 1024 * 1024:
-        await mensagem.reply_text(f"Erro restritivo: Ficheiro excede {MAX_FILE_SIZE_MB} MB.")
-        return
+        await mensagem.reply_text(f"Limite excedido ({MAX_FILE_SIZE_MB} MB).")
+        return MENU_ACAO
 
-    file_id = file_obj.file_id
-
-    # Construção do Teclado Dinâmico
-    teclado = []
-    if file_type == 'video':
-        teclado = [
-            [InlineKeyboardButton("Extrair Voz (Telegram Audio)", callback_data="processar_voz")],
-            [InlineKeyboardButton("Criar Figurinha Animada (Arredondada)", callback_data="processar_sticker_video")]
-        ]
-    elif file_type == 'photo':
-        teclado = [
-            [InlineKeyboardButton("Criar Figurinha Estática (Arredondada)", callback_data="processar_sticker_foto")]
-        ]
-
-    reply_markup = InlineKeyboardMarkup(teclado)
-    resposta = await mensagem.reply_text("Escolha a ação pretendida para este ficheiro:", reply_markup=reply_markup)
+    context.user_data['file_id'] = file_obj.file_id
     
-    # Armazena os dados vinculados ao ID da mensagem com os botões para evitar conflitos se o utilizador enviar vários ficheiros
-    context.user_data[resposta.message_id] = {'file_id': file_id, 'file_type': file_type}
+    if ftype == 'video':
+        teclado = [
+            [InlineKeyboardButton("Extrair Voz", callback_data="voz")],
+            [InlineKeyboardButton("Criar Figurinha Animada", callback_data="sticker_video")]
+        ]
+    else:
+        teclado = [[InlineKeyboardButton("Criar Figurinha Estática", callback_data="sticker_foto")]]
 
-async def botao_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Processa o clique no botão e executa a conversão."""
+    await mensagem.reply_text("Escolha a ação de processamento:", reply_markup=InlineKeyboardMarkup(teclado))
+    return MENU_ACAO
+
+async def processar_acao(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer() # Fecha o estado de "carregando" no botão do Telegram
-
-    msg_id = query.message.message_id
-    dados_ficheiro = context.user_data.get(msg_id)
-
-    if not dados_ficheiro:
-        await query.edit_message_text("Sessão expirada ou ficheiro perdido. Envie novamente.")
-        return
-
+    await query.answer()
     acao = query.data
-    file_id = dados_ficheiro['file_id']
-    
-    await query.edit_message_text("A descarregar dados...")
-    
+    file_id = context.user_data.get('file_id')
+
+    if not file_id:
+        await query.edit_message_text("Falha de memória. Envie o ficheiro novamente.")
+        return ConversationHandler.END
+
+    telegram_file = await context.bot.get_file(file_id)
+    await query.edit_message_text("A processar ficheiro no servidor...")
+
     try:
-        telegram_file = await context.bot.get_file(file_id)
-        
-        if acao == "processar_voz":
+        if acao == "voz":
             await executar_conversao_voz(telegram_file, query)
-        elif acao == "processar_sticker_video":
-            await executar_sticker_video(telegram_file, query)
-        elif acao == "processar_sticker_foto":
-            await executar_sticker_foto(telegram_file, query)
+            context.user_data.clear()
+            return ConversationHandler.END
             
+        elif acao == "sticker_video":
+            dados_sticker = await executar_sticker_video(telegram_file, query)
+            context.user_data['sticker_bytes'] = dados_sticker
+            context.user_data['sticker_format'] = StickerFormat.VIDEO
+            
+        elif acao == "sticker_foto":
+            dados_sticker = await executar_sticker_foto(telegram_file, query)
+            context.user_data['sticker_bytes'] = dados_sticker
+            context.user_data['sticker_format'] = StickerFormat.STATIC
+
+        teclado = [
+            [InlineKeyboardButton("Criar Novo Pacote", callback_data="pacote_novo")],
+            [InlineKeyboardButton("Adicionar a Pacote Existente", callback_data="pacote_add")]
+        ]
+        await query.edit_message_text("Processamento concluído. Onde deseja guardar esta figurinha?", reply_markup=InlineKeyboardMarkup(teclado))
+        return MENU_PACOTE
+
     except Exception as e:
-        logger.error(f"Erro no processamento principal: {e}")
-        await query.edit_message_text("Exceção técnica durante a operação.")
-    finally:
-        # Limpa a memória após o uso
-        if msg_id in context.user_data:
-            del context.user_data[msg_id]
+        logger.error(f"Erro: {e}")
+        await query.edit_message_text("Falha de processamento.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+# --- ROTINAS DE PROCESSAMENTO E CONVERSÃO ---
 
 async def executar_conversao_voz(telegram_file, query):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video, \
-         tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as temp_audio:
-        video_path = temp_video.name
-        audio_path = temp_audio.name
-
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tv, tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as ta:
+        v_path, a_path = tv.name, ta.name
     try:
-        await telegram_file.download_to_drive(video_path)
-        await query.edit_message_text("A processar FFmpeg (Voz)...")
-
-        comando = ["ffmpeg", "-y", "-i", video_path, "-t", str(MAX_DURATION_SEC), "-vn", "-c:a", "libopus", "-b:a", "32k", audio_path]
-        subprocess.run(comando, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        await query.edit_message_text("A transmitir...")
-        with open(audio_path, 'rb') as audio_file:
-            await query.message.reply_voice(voice=audio_file)
-        await query.message.delete()
+        await telegram_file.download_to_drive(v_path)
+        subprocess.run(["ffmpeg", "-y", "-i", v_path, "-t", str(MAX_DURATION_SEC), "-vn", "-c:a", "libopus", "-b:a", "32k", a_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(a_path, 'rb') as f:
+            await query.message.reply_voice(voice=f)
     finally:
-        for p in [video_path, audio_path]:
+        for p in [v_path, a_path]:
             if os.path.exists(p): os.remove(p)
 
-async def executar_sticker_video(telegram_file, query):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video, \
-         tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_mask, \
-         tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_sticker:
-        
-        video_path = temp_video.name
-        mask_path = temp_mask.name
-        sticker_path = temp_sticker.name
-
+async def executar_sticker_video(telegram_file, query) -> bytes:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tv, tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tm, tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as ts:
+        v_path, m_path, s_path = tv.name, tm.name, ts.name
     try:
-        await telegram_file.download_to_drive(video_path)
-        await query.edit_message_text("A gerar máscara geométrica e a codificar VP9 (Pode demorar)...")
-
-        # Cria a máscara estática de cantos arredondados usando Pillow
-        mascara = criar_mascara_arredondada((512, 512), 60)
-        mascara.save(mask_path, "PNG")
-
-        # Comando FFmpeg: Corta o vídeo para 512x512, aplica a máscara como canal Alpha e converte para WEBM VP9 (Máx 3 segundos)
-        comando = [
-            "ffmpeg", "-y", 
-            "-i", video_path, 
-            "-i", mask_path, 
-            "-filter_complex", "[0:v]scale=512:512:force_original_aspect_ratio=increase,crop=512:512[v];[v][1:v]alphamerge", 
-            "-c:v", "libvpx-vp9", 
-            "-t", "3", 
-            "-an", 
-            "-auto-alt-ref", "0",
-            sticker_path
-        ]
-        subprocess.run(comando, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # O Telegram exige um arquivo estrito de Sticker
-        await query.edit_message_text("A transmitir figurinha animada...")
-        with open(sticker_path, 'rb') as sticker_file:
-            await query.message.reply_sticker(sticker=sticker_file)
-        await query.message.delete()
+        await telegram_file.download_to_drive(v_path)
+        criar_mascara_arredondada((512, 512), 60).save(m_path, "PNG")
+        subprocess.run(["ffmpeg", "-y", "-i", v_path, "-i", m_path, "-filter_complex", "[0:v]scale=512:512:force_original_aspect_ratio=increase,crop=512:512[v];[v][1:v]alphamerge", "-c:v", "libvpx-vp9", "-t", "3", "-an", "-auto-alt-ref", "0", s_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open(s_path, 'rb') as f: return f.read()
     finally:
-        for p in [video_path, mask_path, sticker_path]:
+        for p in [v_path, m_path, s_path]:
             if os.path.exists(p): os.remove(p)
 
-async def executar_sticker_foto(telegram_file, query):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_input, \
-         tempfile.NamedTemporaryFile(delete=False, suffix=".webp") as temp_output:
-        input_path = temp_input.name
-        output_path = temp_output.name
-
+async def executar_sticker_foto(telegram_file, query) -> bytes:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as ti, tempfile.NamedTemporaryFile(delete=False, suffix=".webp") as to:
+        i_path, o_path = ti.name, to.name
     try:
-        await telegram_file.download_to_drive(input_path)
-        await query.edit_message_text("A processar imagem (Pillow)...")
-
-        # Lógica de manipulação de imagem
-        img = Image.open(input_path).convert("RGBA")
-        img = ImageOps.fit(img, (512, 512), method=Image.Resampling.LANCZOS)
-        mascara = criar_mascara_arredondada((512, 512), 60)
-        img.putalpha(mascara)
-        img.save(output_path, "WEBP", quality=90)
-
-        await query.edit_message_text("A transmitir figurinha estática...")
-        with open(output_path, 'rb') as sticker_file:
-            await query.message.reply_sticker(sticker=sticker_file)
-        await query.message.delete()
+        await telegram_file.download_to_drive(i_path)
+        img = ImageOps.fit(Image.open(i_path).convert("RGBA"), (512, 512), method=Image.Resampling.LANCZOS)
+        img.putalpha(criar_mascara_arredondada((512, 512), 60))
+        img.save(o_path, "WEBP", quality=90)
+        with open(o_path, 'rb') as f: return f.read()
     finally:
-        for p in [input_path, output_path]:
+        for p in [i_path, o_path]:
             if os.path.exists(p): os.remove(p)
+
+# --- FLUXO DE PACOTES ---
+
+async def escolha_pacote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    if query.data == "pacote_novo":
+        await query.edit_message_text("Digite o TÍTULO do novo pacote (O nome visível na galeria):")
+        return NOVO_TITULO
+    else:
+        await query.edit_message_text("Envie UM EMOJI para vincular a esta figurinha:")
+        return ADD_EMOJI
+
+# -- Criação de Pacote Novo --
+async def novo_titulo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['pack_title'] = update.message.text
+    bot_info = await context.bot.get_me()
+    await update.message.reply_text(f"Digite o NOME CURTO do pacote (usado na URL). O sistema adicionará automaticamente '_by_{bot_info.username}' ao final.")
+    return NOVO_NOME
+
+async def novo_nome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    bot_info = await context.bot.get_me()
+    nome_curto = update.message.text.replace(" ", "_")
+    nome_final = f"{nome_curto}_by_{bot_info.username}"
+    context.user_data['pack_name'] = nome_final
+    await update.message.reply_text(f"O identificador será {nome_final}.\nAgora, envie UM EMOJI para vincular a esta figurinha inicial:")
+    return NOVO_EMOJI
+
+async def concluir_novo_pacote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    emoji = update.message.text
+    user_id = update.effective_user.id
+    try:
+        await context.bot.create_new_sticker_set(
+            user_id=user_id,
+            name=context.user_data['pack_name'],
+            title=context.user_data['pack_title'],
+            stickers=[InputSticker(context.user_data['sticker_bytes'], emoji_list=[emoji], format=context.user_data['sticker_format'])]
+        )
+        await update.message.reply_text(f"Pacote criado! Aceda aqui: t.me/addstickers/{context.user_data['pack_name']}")
+    except Exception as e:
+        await update.message.reply_text(f"Falha na API do Telegram: {e}")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# -- Adição a Pacote Existente --
+async def add_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['pack_emoji'] = update.message.text
+    bot_info = await context.bot.get_me()
+    await update.message.reply_text(f"Digite o NOME CURTO do pacote existente (deve terminar em _by_{bot_info.username}):")
+    return ADD_NOME
+
+async def concluir_add_pacote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    nome_pacote = update.message.text
+    user_id = update.effective_user.id
+    try:
+        await context.bot.add_sticker_to_set(
+            user_id=user_id,
+            name=nome_pacote,
+            sticker=InputSticker(context.user_data['sticker_bytes'], emoji_list=[context.user_data['pack_emoji']], format=context.user_data['sticker_format'])
+        )
+        await update.message.reply_text(f"Figurinha adicionada ao pacote {nome_pacote} com sucesso.")
+    except Exception as e:
+        await update.message.reply_text(f"Falha na API: {e}\nNota: O bot só pode adicionar a pacotes que ele próprio criou.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Operação abortada.")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 def main() -> None:
     if not TOKEN:
@@ -200,16 +214,28 @@ def main() -> None:
         sys.exit(1)
 
     application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    
-    # Escuta vídeos, documentos de vídeo e fotos
-    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO | filters.PHOTO, receber_midia))
-    
-    # Escuta os cliques nos botões
-    application.add_handler(CallbackQueryHandler(botao_callback))
 
-    logger.info("Sistema ativo.")
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.VIDEO | filters.Document.VIDEO | filters.PHOTO, receber_midia)],
+        states={
+            MENU_ACAO: [CallbackQueryHandler(processar_acao)],
+            MENU_PACOTE: [CallbackQueryHandler(escolha_pacote)],
+            NOVO_TITULO: [MessageHandler(filters.TEXT & ~filters.COMMAND, novo_titulo)],
+            NOVO_NOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, novo_nome)],
+            NOVO_EMOJI: [MessageHandler(filters.TEXT & ~filters.COMMAND, concluir_novo_pacote)],
+            ADD_EMOJI: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_emoji)],
+            ADD_NOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, concluir_add_pacote)],
+        },
+        fallbacks=[CommandHandler("cancelar", cancelar)],
+        per_message=False
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler)
+
+    logger.info("Sistema ativo de processamento de media e pacotes.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
+    
