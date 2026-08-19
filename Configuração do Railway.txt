@@ -1,0 +1,7 @@
+[phases.setup]
+# Instala o FFmpeg no sistema operativo do contentor Railway
+aptPkgs = ["ffmpeg"]
+
+[start]
+# Comando de inicialização do processo
+cmd = "python bot.py"
