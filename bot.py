@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import logging
 import io
+import math
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputSticker
 from telegram.constants import StickerFormat
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
@@ -19,11 +20,33 @@ MAX_DURATION_SEC = 120
 
 MENU_ACAO, MENU_PACOTE, NOVO_TITULO, NOVO_NOME, NOVO_EMOJI, ADD_EMOJI, ADD_NOME = range(7)
 
-def criar_mascara_arredondada(tamanho, raio):
-    mascara = Image.new('L', tamanho, 0)
+# Superelipse n=5 ≈ squircle iOS — o shape da moldura enviado para a branch rounded.
+SQUIRCLE_N = 5.0
+
+
+def criar_mascara_arredondada(tamanho, raio=None):
+    """Máscara squircle (superelipse n=5): cantos contínuos, sem o raio fixo do rounded_rectangle."""
+    largura, altura = tamanho
+    expoente = 2.0 / SQUIRCLE_N
+    escala = 4
+    sw, sh = largura * escala, altura * escala
+    mascara = Image.new("L", (sw, sh), 0)
     draw = ImageDraw.Draw(mascara)
-    draw.rounded_rectangle((0, 0, tamanho[0], tamanho[1]), raio, fill=255)
-    return mascara
+    cx = (sw - 1) / 2.0
+    cy = (sh - 1) / 2.0
+    ax = sw / 2.0
+    ay = sh / 2.0
+    pontos = []
+    passos = 512
+    for i in range(passos):
+        theta = (2.0 * math.pi * i) / passos
+        cosseno = math.cos(theta)
+        seno = math.sin(theta)
+        x = cx + ax * math.copysign(abs(cosseno) ** expoente, cosseno)
+        y = cy + ay * math.copysign(abs(seno) ** expoente, seno)
+        pontos.append((x, y))
+    draw.polygon(pontos, fill=255)
+    return mascara.resize((largura, altura), Image.Resampling.LANCZOS)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
