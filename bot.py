@@ -72,13 +72,18 @@ def extrair_item(mensagem):
         return None
     return {
         "file_id": file_obj.file_id,
+        "unique_id": getattr(file_obj, "file_unique_id", None) or file_obj.file_id,
         "ftype": ftype,
         "message_id": mensagem.message_id,
         "file_size": getattr(file_obj, "file_size", 0) or 0,
     }
 
 
-def enfileirar_item(context, item) -> str:
+def vistos_do_usuario(context, user_id: int) -> set:
+    return context.application.bot_data.setdefault("vistos", {}).setdefault(user_id, set())
+
+
+def enfileirar_item(context, item, user_id: int, permitir_repetido: bool = False) -> str:
     fila = context.user_data.setdefault("fila", [])
     if any(x["message_id"] == item["message_id"] for x in fila):
         return "dup"
@@ -86,10 +91,72 @@ def enfileirar_item(context, item) -> str:
         return "size"
     if len(fila) >= MAX_FILA:
         return "full"
+    unique_id = item.get("unique_id")
+    if unique_id and not permitir_repetido:
+        vistos = vistos_do_usuario(context, user_id)
+        if unique_id in vistos or any(x.get("unique_id") == unique_id for x in fila):
+            return "repeat"
     fila.append(item)
     fila.sort(key=lambda x: x["message_id"])
     context.user_data["fila"] = fila
+    if unique_id:
+        vistos_do_usuario(context, user_id).add(unique_id)
     return "ok"
+
+
+async def pedir_confirmacao_repetido(update: Update, context: ContextTypes.DEFAULT_TYPE, item) -> None:
+    pending = context.user_data.setdefault("pending_dups", {})
+    mid = str(item["message_id"])
+    pending[mid] = item
+    teclado = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Sim, adicionar de novo", callback_data=f"dup:sim:{mid}"),
+                InlineKeyboardButton("Não, ignorar", callback_data=f"dup:nao:{mid}"),
+            ]
+        ]
+    )
+    await update.effective_message.reply_text(
+        "Este arquivo já foi enviado alguma vez.\n"
+        "Deseja adicioná-lo repetidamente, ou prefere corrigir e ignorar esta cópia?",
+        reply_markup=teclado,
+    )
+
+
+async def confirmar_duplicado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    partes = query.data.split(":")
+    if len(partes) != 3:
+        return None
+    _, decisao, mid = partes
+    pending = context.user_data.setdefault("pending_dups", {})
+    item = pending.pop(mid, None)
+    if not item:
+        await query.edit_message_text("Esse pedido já foi respondido.")
+        return None
+
+    if decisao == "nao":
+        await query.edit_message_text("Cópia ignorada. Envie o arquivo certo se quiser corrigir.")
+        fila = context.user_data.get("fila") or []
+        if not fila and not pending:
+            return ConversationHandler.END
+        return None
+
+    reason = enfileirar_item(context, item, query.from_user.id, permitir_repetido=True)
+    if reason == "full":
+        await query.edit_message_text(f"Fila cheia ({MAX_FILA}). Não deu para repetir este.")
+        return None
+    if reason != "ok":
+        await query.edit_message_text("Não foi possível adicionar de novo.")
+        return None
+
+    n = len(context.user_data.get("fila") or [])
+    await query.edit_message_text(f"Ok, entra de novo na fila ({n}/{MAX_FILA}).")
+    if not context.user_data.get("acao"):
+        await agendar_menu_acao(update, context)
+        return MENU_ACAO
+    return None
 
 
 def teclado_acao(fila):
@@ -166,7 +233,7 @@ async def aceitar_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if not item:
         return MENU_ACAO
 
-    reason = enfileirar_item(context, item)
+    reason = enfileirar_item(context, item, update.effective_user.id)
     if reason == "size":
         await update.message.reply_text(f"Ficheiro ignorado: excede {MAX_FILE_SIZE_MB} MB.")
         if context.user_data.get("fila"):
@@ -181,6 +248,9 @@ async def aceitar_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             return MENU_ACAO
         return ConversationHandler.END
     if reason == "dup":
+        return MENU_ACAO
+    if reason == "repeat":
+        await pedir_confirmacao_repetido(update, context, item)
         return MENU_ACAO
 
     if not context.user_data.get("menu_msg_id"):
@@ -223,13 +293,15 @@ async def enfileirar_durante(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not item:
         return None
 
-    reason = enfileirar_item(context, item)
+    reason = enfileirar_item(context, item, update.effective_user.id)
     if reason == "size":
         await update.message.reply_text(f"Ficheiro ignorado: excede {MAX_FILE_SIZE_MB} MB.")
     elif reason == "full":
         if not context.user_data.get("fila_cheia_avisada"):
             context.user_data["fila_cheia_avisada"] = True
             await update.message.reply_text(f"Fila cheia ({MAX_FILA}). Os extras foram ignorados.")
+    elif reason == "repeat":
+        await pedir_confirmacao_repetido(update, context, item)
     elif reason == "ok" and not context.user_data.get("acao"):
         await agendar_menu_acao(update, context)
     elif reason == "ok" and context.user_data.get("acao"):
@@ -521,11 +593,13 @@ def main() -> None:
         entry_points=[MessageHandler(MEDIA_FILTER, receber_midia)],
         states={
             MENU_ACAO: [
-                CallbackQueryHandler(processar_acao),
+                CallbackQueryHandler(confirmar_duplicado, pattern=r"^dup:"),
+                CallbackQueryHandler(processar_acao, pattern=r"^(voz|audio_whatsapp|sticker_video|sticker_foto|sticker_fila)$"),
                 MessageHandler(MEDIA_FILTER, enfileirar_durante),
             ],
             MENU_PACOTE: [
-                CallbackQueryHandler(escolha_pacote),
+                CallbackQueryHandler(confirmar_duplicado, pattern=r"^dup:"),
+                CallbackQueryHandler(escolha_pacote, pattern=r"^pacote_"),
                 MessageHandler(MEDIA_FILTER, enfileirar_durante),
             ],
             NOVO_TITULO: [
@@ -549,7 +623,10 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, concluir_add_pacote),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
+        fallbacks=[
+            CommandHandler("cancelar", cancelar),
+            CallbackQueryHandler(confirmar_duplicado, pattern=r"^dup:"),
+        ],
         per_message=False,
     )
 
